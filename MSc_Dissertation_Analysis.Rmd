@@ -1,0 +1,406 @@
+---
+title: "MSc_Thesis"
+author: "Shannon McNee"
+date: "28 November 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+
+library(tidyverse)
+library(viridis)
+library(psych)
+library(lavaan)
+library(Hmisc)
+library(corrplot)
+```
+
+
+## Overview 
+
+In the current study, we are interested in understanding whether an individual's social comparison orientation and social media engagement style relate to levels of night-time social media use, rumination, emotional investment in social media, and sleep outcomes. In this study, social comparison orientation is discussed in relation to two subtypes: ability-based comparison and opinion-based comparison. Social media engagement style is also broken down into two types: active and passive. 
+
+We predict: 
+
+H1. Individuals who engage in passive night-time social media use will demonstrate increased ability-based social comparison. 
+
+H2. Individuals who engage in ability-based social comparison will experience increased emotional investment in social media. 
+
+H3. Individuals who engage in ability-based social comparison will also experience increased rumination, mediated by increases in emotional investment in social media.
+
+H4. Increased rumination will be associated with poor sleep for individuals who engage in ability-based social comparison
+
+Ultimately, we propose a model which predicts that passive night-time social media use will be associated with increased engagement in ability-based comparison (H1). In turn, increased ability-based comparison will be associated with increased emotional investment in social media (H2) which will act as a mediator of the relationship between ability-based comparison and rumination (H3), with increased rumination resulting in reduced sleep outcomes (H4).
+
+## Load in Data 
+
+```{r load dat}
+
+data <- read_csv("Social-media-mental-wellbeing-and-sleep-quests_2019-01-29.csv")
+
+```
+
+## Cleaning and Organising Data
+
+1. Filter data: Remove any observations which are not from registered participants (i.e. admins or students), remove any questionnaires which are not demographic and remove anyone that reports a sleep condition.
+
+```{r clean}
+
+filtered_demographic_data <- data %>%
+  select(user_id, user_sex, user_status, user_age, quest_id, q_name,dv) %>%
+  filter(user_status == "registered", quest_id == 18, q_name == "fb_use" | q_name == "insta_use" | q_name == "twitter_use" | q_name == "combined_use" | q_name == "sleep_condition" | q_name == "sleep_treatment") %>%
+  distinct(user_id,q_name, .keep_all = TRUE) %>%
+  spread(q_name,dv) %>%
+  filter(combined_use < 7) %>%
+  filter(str_detect(sleep_condition,"^N/") | str_detect(sleep_condition,"^n/") | str_detect(sleep_condition, "^N") | str_detect(sleep_condition, "^n")) %>%
+gather("q_name","dv", 6:11)
+
+```
+
+2. Filter out demographic questionnaires and rescore questions whose formats were not supported by Experimentum platform. 
+
+```{r recode measures}
+
+q_data <- data %>%
+  select(user_id, user_status, quest_id, q_name, dv) %>%
+  arrange(user_id) %>%
+  filter(user_status == "registered", quest_id < 15, user_id != 76) %>%
+  select(user_id, q_name, dv) %>%
+  distinct(user_id,q_name, .keep_all = TRUE) %>%
+  spread(q_name,dv) %>%
+  mutate(SC_Q5 = ifelse(SC_Q5 == 5, 1,
+                        ifelse(SC_Q5 == 4,2,
+                               ifelse(SC_Q5 == 3, 3,
+                                      ifelse(SC_Q5 == 2, 4,
+                                             ifelse(SC_Q5 == 1, 5, "")))))) %>%
+  mutate(SM2_Q5 = ifelse(SM2_Q5 == 0,1,
+                         ifelse(SM2_Q5 == 1,1,
+                                ifelse(SM2_Q5 == 2, 0,
+                                       ifelse(SM2_Q5 == 3, 0, "")))))
+
+rum <- q_data %>%
+  select(R_Q1:R_Q9) %>%
+  mutate_all(funs(ifelse(. == 1,0,
+                         ifelse(. == 2, 1,
+                         ifelse(. == 3,2,
+                         ifelse(. == 4, 3,
+                         ifelse(. == 5, 4, ""))))))) %>%
+  select(R_Q1, R_Q2, R_Q3, R_Q4, R_Q5, R_Q6, R_Q7, R_Q8, R_Q9, R_Q10,
+         R_Q11, R_Q12, R_Q13, R_Q14, R_Q15)
+ 
+
+q_dat <- q_data %>%
+  select(-c(R_Q1:R_Q9)) %>%
+  cbind(rum) %>%
+  gather(q_name,dv,EI_Q1:R_Q15) %>%
+  arrange(user_id) %>%
+  distinct(user_id,q_name,dv)
+  
+
+```
+
+3. Make questionnaire names meaningful   
+
+```{r recode measures2}
+questionnaire_data <- q_dat %>%
+  mutate(
+    questionnaire = ifelse(
+      q_name == "SC_Q1" |
+        q_name == "SC_Q2" |
+        q_name == "SC_Q3" |
+        q_name == "SC_Q4" | q_name == "SC_Q5",
+      "Ability_Comparison",
+      ifelse(
+        q_name == "SC_Q6" |
+          q_name == "SC_Q7" |
+          q_name == "SC_Q8" | q_name == "SC_Q9",
+        "Opinion_Comparison",
+        ifelse(
+          q_name == "PA_Q1" |
+            q_name == "PA_Q2" |
+            q_name == "PA_Q3" |
+            q_name == "PA_Q6" | q_name == "PA_Q12",
+          "Active_Social",
+          ifelse(
+            q_name == "PA_Q5" |
+              q_name == "PA_Q7" |
+              q_name == "PA_Q9" | q_name == "PA_Q10",
+            "Active_NonSoc",
+            ifelse(
+              q_name == "PA_Q4" |
+                q_name == "PA_Q8" |
+                q_name == "PA_Q11" | q_name == "PA_Q13",
+              "Passive",
+              ifelse(
+                grepl("R_Q", q_name),
+                "Rumination",
+                ifelse(
+                  grepl("EI_Q", q_name),
+                  "Emo_Invest",
+                  ifelse(
+                    grepl("SM2_Q", q_name),
+                    "Night_SM",
+                    ifelse(grepl("SCI_Q", q_name), "Sleep_Condition", "")
+                  )
+                )
+              )
+            )
+          )
+        )
+      )
+    )
+  )
+
+
+
+questionnaire_names <- unique(questionnaire_data$questionnaire)
+
+
+```
+
+4. Remove participants where more than half of their responses are incomplete
+
+```{r remove nas}
+filtered_questionnaire_data <- questionnaire_data %>%
+  group_by(user_id) %>%
+  filter(!is.na(dv) > 0.5) %>%
+  filter(all(questionnaire_names %in% questionnaire))
+  
+```
+
+5. Find sum score on each measure per participant and mean, sd, and range of responses 
+
+```{r sums}
+
+sum_scores <- filtered_questionnaire_data %>%
+  group_by(user_id, questionnaire) %>%
+  summarise(Score = sum(as.integer(dv))) %>%
+  arrange(questionnaire) %>%
+  ungroup() 
+
+mean_sd_range <- sum_scores %>%
+  group_by(questionnaire) %>%
+  summarise(Mean = mean(Score),
+            SD = sd(Score),
+            Min = min(Score),
+            Max = max(Score))
+
+
+```
+
+
+6. Use this cleaned data to find out age and gender demographic info 
+
+```{r pinfo} 
+participant_info <- filtered_demographic_data %>%
+  right_join(., sum_scores, by = "user_id") %>%
+  select(user_id,user_sex,user_age) %>%
+  unique() %>%
+  group_by(user_sex) %>%
+  summarise(n = n(),
+            mean_age = mean(user_age),
+            sd_age = sd(user_age))
+
+```
+
+## Confirmatory Analysis
+
+Assess hypothesised relationships between Night-time Social Media Use,Passive Use, Ability Comparison, Emotional Investment, Rumination and Sleep Condition.
+
+### Correlations
+
+```{r corr confirm}
+
+scores <- sum_scores %>%
+  spread(questionnaire,Score) %>%
+  select(-user_id) 
+
+corr_matrix <- scores %>%
+  select(Night_SM,Ability_Comparison, Passive, Emo_Invest, Rumination, Sleep_Condition) %>%
+  corr.test(adjust = "none")
+
+```
+
+```{r vis1, echo = TRUE}
+# extracting r values from corr_matrix
+r_values <- corr_matrix[["r"]] %>%
+  as.data.frame() %>%
+  rownames_to_column(var = "V1") %>%
+  gather("V2","r", Night_SM:Sleep_Condition) 
+
+# extracting p values from corr_matrix
+
+p_values <- corr_matrix[["p"]] %>%
+  as.data.frame() %>%
+  rownames_to_column(var = "V1") %>%
+  gather("V2", "p", Night_SM:Sleep_Condition)
+
+ggplot(r_values, aes(V1,V2, fill = r)) +
+         geom_tile(aes(fill = r)) +
+         scale_fill_viridis() +
+         geom_text(aes(label = paste(round(r,1)))) +
+         theme(axis.text.x= element_text(angle=90))
+
+ggplot(p_values, aes(V1,V2, fill = p)) +
+         geom_tile(aes(fill = p)) +
+         scale_fill_viridis() +
+         geom_text(aes(label = paste(round(p,3)))) +
+         theme(axis.text.x= element_text(angle=90))
+
+
+# publication figure 
+
+confirm_dat <- scores %>%
+select(Night_SM,Ability_Comparison, Passive, Emo_Invest, Rumination, Sleep_Condition) %>%
+cor()
+
+corrplot(confirm_dat, method = "ellipse", type = "upper", diag = FALSE, addCoef.col = "black", tl.col = "black")
+
+```
+
+### Regression
+
+We hypothesised that increased Emotional Investment will act as a mediator between Ability comparison and Rumination 
+
+```{r reg_emo_invest} 
+
+
+reg3 <- 'Emo_Invest ~ a*Ability_Comparison
+         Rumination ~ b*Emo_Invest
+         Rumination ~ c*Ability_Comparison
+
+         indirect := a*b
+         direct := c
+         total := c + (a*b)'
+
+fit_reg3 <- sem(reg3, scores)
+summary(fit_reg3, standardized = T, fit.measures = T, rsq = T)
+
+
+```
+
+### Path Analysis 
+
+We hypothesise that increased levels of passive night-time social media use will be associated with increased levels of ability based comparison. In turn, this will increase emotional investment in social media which will act as a mediator between ability-based comparison and rumination. Increased rumination will then negatively impact sleep. To test this model, we will conduct path analysis. 
+
+```{r path_confirm} 
+## Passive Ability
+
+med_mod1 <- 'Ability_Comparison ~ a*Passive
+             Emo_Invest ~ b*Ability_Comparison
+             Rumination ~ c*Emo_Invest
+             Sleep_Condition ~ d*Rumination
+             
+             
+         indirect := b*c
+         total := a + (b*c) + d'
+
+fit1 <- sem(med_mod1, scores)
+summary(fit1, standardized = T, fit.measures = T, rsq = T)
+
+``` 
+
+## Exploratory Analysis 
+
+As Emotional Investment was not found to be a significant mediator of the relationship between Ability-based Comparison and Rumination, we updated our proposed model and investigated whether Rumination is a significant mediator of the relationship between Ability Comparison and Sleep Outcomes. 
+
+```{r path explore1}
+## Passive Ability
+
+med_mod2 <- 'Ability_Comparison ~ a*Passive
+             Rumination ~ b*Ability_Comparison
+             Sleep_Condition ~ c*Rumination
+        
+
+         indirect := b*c
+         total := a + (b*c)'
+
+fit2 <- sem(med_mod2, scores)
+summary(fit2, standardized = T, fit.measures = T, rsq = T)
+
+```
+
+Passive Use was not found to explain Sleep Outcomes. As a result, we chose to explore whether Active Use (Active-Social versus Active Non-Social) may better explain the relationship between Ability-based comparison, Rumination and Sleep Outcomes. 
+
+### Exploratory Correlations 
+
+```{r corr explore} 
+
+corr_matrix_exp <- scores %>%
+  select(Night_SM,Ability_Comparison, Opinion_Comparison, Active_Social, Active_NonSoc, Passive, Emo_Invest, Rumination, Sleep_Condition) %>%
+  corr.test(adjust = "none")
+
+```
+
+```{r vis2, echo = TRUE}
+
+# extracting r values from corr_matrix
+r_values <- corr_matrix_exp[["r"]] %>%
+  as.data.frame() %>%
+  rownames_to_column(var = "V1") %>%
+  gather("V2","r", Night_SM:Sleep_Condition) 
+
+# visualising r values
+ggplot(r_values, aes(V1,V2, fill = r)) +
+         geom_tile(aes(fill = r)) +
+         scale_fill_viridis() +
+         geom_text(aes(label = paste(round(r,1)))) +
+         theme(axis.text.x= element_text(angle=90))
+
+# extracting p values from corr_matrix
+
+p_values <- corr_matrix_exp[["p"]] %>%
+  as.data.frame() %>%
+  rownames_to_column(var = "V1") %>%
+  gather("V2", "p", Night_SM:Sleep_Condition)
+
+# visualising p values
+
+ggplot(p_values, aes(V1,V2, fill = p)) +
+         geom_tile(aes(fill = p)) +
+         scale_fill_viridis() +
+         geom_text(aes(label = paste(round(p,3)))) +
+         theme(axis.text.x= element_text(angle=90))
+
+# publication figure 
+
+exploratory_dat <- scores %>%
+select(Night_SM,Ability_Comparison, Opinion_Comparison, Passive, Active_NonSoc, Active_Social,  Rumination, Sleep_Condition) %>%
+cor()
+
+corrplot(exploratory_dat, method = "ellipse", type = "upper", diag = FALSE, addCoef.col = "black", tl.col = "black")
+
+
+```
+
+### Exploratory Path Analysis
+
+```{r path explore2}
+
+# Active Social Ability
+
+med_mod3 <- 'Ability_Comparison ~ a*Active_Social 
+             Rumination ~ b*Ability_Comparison
+             Sleep_Condition ~ c*Rumination
+
+             indirect := b*c
+             total := a + (b*c)'
+
+fit3 <- sem(med_mod3, scores)
+summary(fit3, standardized = T, fit.measures = T, rsq = T)
+
+# Active Non Social Ability
+
+med_mod4 <- 'Ability_Comparison ~ a*Active_NonSoc
+             Rumination ~ b*Ability_Comparison
+             Sleep_Condition ~ c*Rumination
+
+             indirect := b*c
+             total := a + (b*c)'
+
+fit4 <- sem(med_mod4, scores)
+summary(fit4, standardized = T, fit.measures = T, rsq = T)
+
+```
+
